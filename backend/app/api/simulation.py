@@ -467,6 +467,8 @@ def prepare_simulation():
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
+        target_timezone = data.get('timezone', Config.DEFAULT_SIMULATION_TIMEZONE)
+        target_culture = data.get('culture', Config.DEFAULT_SIMULATION_CULTURE)
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
@@ -587,7 +589,9 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    target_timezone=target_timezone,
+                    target_culture=target_culture,
                 )
                 
                 # 任务完成
@@ -2714,3 +2718,36 @@ def close_simulation_env():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+# ============== Cost Tracking ==============
+
+@simulation_bp.route('/<simulation_id>/cost', methods=['GET'])
+def get_simulation_cost(simulation_id: str):
+    """Return LLM API cost breakdown for a simulation."""
+    try:
+        from ..services.cost_tracker import get_cost_breakdown, get_total_cost
+        breakdown = get_cost_breakdown(simulation_id)
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "total_cost_usd": get_total_cost(simulation_id),
+                "total_calls": len(breakdown),
+                "breakdown": breakdown,
+            }
+        })
+    except Exception as e:
+        logger.error(f"Cost retrieval failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@simulation_bp.route('/costs/summary', methods=['GET'])
+def get_costs_summary():
+    """Return per-context cost summary across all tracked simulations."""
+    try:
+        from ..services.cost_tracker import get_summary
+        return jsonify({"success": True, "data": get_summary()})
+    except Exception as e:
+        logger.error(f"Cost summary failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500

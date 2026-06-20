@@ -226,6 +226,16 @@ class SimulationRunner:
     
     # 图谱记忆更新配置
     _graph_memory_enabled: Dict[str, bool] = {}  # simulation_id -> enabled
+
+    # Concurrency gate: limits simultaneous OASIS subprocesses
+    _simulation_semaphore: threading.Semaphore = None  # initialized lazily after Config is loaded
+
+    @classmethod
+    def _get_semaphore(cls) -> threading.Semaphore:
+        if cls._simulation_semaphore is None:
+            from ..config import Config
+            cls._simulation_semaphore = threading.Semaphore(Config.MAX_CONCURRENT_SIMULATIONS)
+        return cls._simulation_semaphore
     
     @classmethod
     def get_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
@@ -404,7 +414,16 @@ class SimulationRunner:
         # 创建动作队列
         action_queue = Queue()
         cls._action_queues[simulation_id] = action_queue
-        
+
+        # Acquire concurrency slot (blocks if MAX_CONCURRENT_SIMULATIONS already running)
+        semaphore = cls._get_semaphore()
+        acquired = semaphore.acquire(blocking=True, timeout=0)
+        if not acquired:
+            state.runner_status = RunnerStatus.FAILED
+            state.error = "Too many simulations running concurrently. Try again later."
+            cls._save_run_state(state)
+            raise ValueError(state.error)
+
         # 启动模拟进程
         try:
             # 构建运行命令，使用完整路径
@@ -474,8 +493,9 @@ class SimulationRunner:
             state.runner_status = RunnerStatus.FAILED
             state.error = str(e)
             cls._save_run_state(state)
+            semaphore.release()
             raise
-        
+
         return state
     
     @classmethod
@@ -566,6 +586,9 @@ class SimulationRunner:
             cls._processes.pop(simulation_id, None)
             cls._action_queues.pop(simulation_id, None)
             
+            # Release concurrency slot so the next queued simulation can start
+            cls._get_semaphore().release()
+
             # 关闭日志文件句柄
             if simulation_id in cls._stdout_files:
                 try:
