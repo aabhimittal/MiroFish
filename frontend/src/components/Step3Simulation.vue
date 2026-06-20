@@ -282,6 +282,15 @@
         </div>
       </div>
     </div>
+
+    <!-- Results Dashboard (shown after simulation completes) -->
+    <div v-if="simulationDone && simulationId" class="dashboard-section">
+      <div class="dashboard-toggle" @click="showDashboard = !showDashboard">
+        <span>📊 Results Dashboard</span>
+        <span class="toggle-arrow">{{ showDashboard ? '▲' : '▼' }}</span>
+      </div>
+      <ResultsDashboard v-if="showDashboard" :simulationId="simulationId" />
+    </div>
   </div>
 </template>
 
@@ -296,6 +305,7 @@ import {
   getRunStatusDetail
 } from '../api/simulation'
 import { generateReport } from '../api/report'
+import ResultsDashboard from './ResultsDashboard.vue'
 
 const { t } = useI18n()
 
@@ -318,6 +328,8 @@ const router = useRouter()
 // State
 const isGeneratingReport = ref(false)
 const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成
+const simulationDone = ref(false)
+const showDashboard = ref(false)
 const isStarting = ref(false)
 const isStopping = ref(false)
 const startError = ref(null)
@@ -525,6 +537,8 @@ const fetchRunStatus = async () => {
         addLog(t('log.simCompleted'))
         phase.value = 2
         stopPolling()
+        simulationDone.value = true
+        showDashboard.value = true
         emit('update-status', 'completed')
       }
     }
@@ -1264,4 +1278,15 @@ onUnmounted(() => {
   animation: spin 0.8s linear infinite;
   margin-right: 6px;
 }
+
+/* Results Dashboard toggle */
+.dashboard-section { margin-top: 1.5rem; }
+.dashboard-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #1a1a2e; border: 1px solid #a78bfa44; border-radius: 8px;
+  padding: 10px 16px; cursor: pointer; font-size: 13px; color: #a78bfa;
+  margin-bottom: 8px; user-select: none;
+}
+.dashboard-toggle:hover { background: #20203a; }
+.toggle-arrow { font-size: 10px; color: #666; }
 </style>

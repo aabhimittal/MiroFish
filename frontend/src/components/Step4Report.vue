@@ -386,6 +386,66 @@
         </div>
       </div>
     </div>
+
+    <!-- Export + Validation (shown when report is complete) -->
+    <div v-if="isComplete && reportId" class="export-validation-area">
+      <!-- HTML Export -->
+      <div class="ev-section">
+        <div class="ev-title">Export Report</div>
+        <div class="ev-row">
+          <button class="ev-btn" @click="downloadHtml" :disabled="exportingHtml">
+            <span v-if="exportingHtml">Exporting…</span>
+            <span v-else>⬇ Download HTML</span>
+          </button>
+          <span class="ev-hint">Self-contained HTML file — share with stakeholders</span>
+        </div>
+      </div>
+
+      <!-- Ground Truth Validation -->
+      <div class="ev-section">
+        <div class="ev-title">Validate Predictions</div>
+        <div v-if="!validationResult" class="ev-validate-form">
+          <textarea
+            v-model="groundTruth"
+            class="ev-textarea"
+            placeholder="Paste what actually happened (news article, official report, event summary)…"
+            rows="5"
+          ></textarea>
+          <button class="ev-btn ev-btn-purple" @click="runValidation" :disabled="validating || !groundTruth.trim()">
+            <span v-if="validating">Validating… (this may take a minute)</span>
+            <span v-else>▶ Run Validation</span>
+          </button>
+          <div v-if="validationError" class="ev-error">{{ validationError }}</div>
+        </div>
+        <div v-else class="ev-result">
+          <div class="vr-score-row">
+            <div class="vr-score">{{ validationResult.overall_score !== null ? validationResult.overall_score + '%' : 'N/A' }}</div>
+            <div class="vr-score-label">Prediction Accuracy</div>
+            <div class="vr-counts">
+              <span class="vr-confirmed">✓ {{ validationResult.total_confirmed }} confirmed</span>
+              <span class="vr-contradicted">✗ {{ validationResult.total_contradicted }} contradicted</span>
+            </div>
+          </div>
+          <div v-if="validationResult.summary" class="vr-summary">{{ validationResult.summary }}</div>
+          <div class="vr-sections">
+            <div v-for="sec in validationResult.sections" :key="sec.section_index" class="vr-section">
+              <div class="vr-sec-header" @click="toggleVrSection(sec.section_index)">
+                <span class="vr-sec-title">{{ sec.section_title }}</span>
+                <span class="vr-sec-score" :class="scoreClass(sec.score)">
+                  {{ sec.score !== null ? sec.score + '%' : '—' }}
+                </span>
+              </div>
+              <div v-if="openVrSections.has(sec.section_index)" class="vr-claims">
+                <div v-for="c in sec.verified" :key="c" class="claim claim-ok">✓ {{ c }}</div>
+                <div v-for="c in sec.contradicted" :key="c" class="claim claim-no">✗ {{ c }}</div>
+              </div>
+            </div>
+          </div>
+          <button class="ev-btn-sm" @click="validationResult = null; groundTruth = ''">Re-validate</button>
+          <span class="ev-hint">Validated {{ fmtDate(validationResult.validated_at) }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -393,7 +453,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getAgentLog, getConsoleLog } from '../api/report'
+import { getAgentLog, getConsoleLog, validateReport, getValidation, exportReportHtml } from '../api/report'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -405,6 +465,70 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+
+// ---- Export & Validation ----
+const groundTruth = ref('')
+const validating = ref(false)
+const validationError = ref('')
+const validationResult = ref(null)
+const exportingHtml = ref(false)
+const openVrSections = ref(new Set())
+
+async function downloadHtml() {
+  if (!props.reportId) return
+  exportingHtml.value = true
+  try {
+    const res = await exportReportHtml(props.reportId)
+    const url = URL.createObjectURL(new Blob([res.data], { type: 'text/html' }))
+    const a = document.createElement('a')
+    a.href = url; a.download = `report_${props.reportId}.html`; a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    console.error('HTML export failed', e)
+  } finally {
+    exportingHtml.value = false
+  }
+}
+
+async function runValidation() {
+  if (!props.reportId || !groundTruth.value.trim()) return
+  validating.value = true
+  validationError.value = ''
+  try {
+    const res = await validateReport(props.reportId, groundTruth.value)
+    validationResult.value = res.data?.data || null
+  } catch (e) {
+    validationError.value = e?.response?.data?.error || 'Validation failed'
+  } finally {
+    validating.value = false
+  }
+}
+
+function toggleVrSection(idx) {
+  const s = new Set(openVrSections.value)
+  s.has(idx) ? s.delete(idx) : s.add(idx)
+  openVrSections.value = s
+}
+
+function scoreClass(score) {
+  if (score === null || score === undefined) return 'score-neutral'
+  if (score >= 70) return 'score-good'
+  if (score >= 40) return 'score-mid'
+  return 'score-bad'
+}
+
+function fmtDate(iso) {
+  try { return new Date(iso).toLocaleString() } catch { return iso }
+}
+
+// Try to load a cached validation on mount
+watch(() => props.reportId, async (id) => {
+  if (!id) return
+  try {
+    const res = await getValidation(id)
+    if (res.data?.data) validationResult.value = res.data.data
+  } catch { /* no cached result — that's fine */ }
+}, { immediate: true })
 
 // Navigation
 const goToInteraction = () => {
@@ -5152,6 +5276,56 @@ watch(() => props.reportId, (newId) => {
 .log-msg.error { color: #EF5350; }
 .log-msg.warning { color: #FFA726; }
 .log-msg.success { color: #66BB6A; }
+
+/* Export & Validation */
+.export-validation-area { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+.ev-section {
+  background: #1a1a2e; border: 1px solid #2a2a3a; border-radius: 8px; padding: 1.25rem 1.5rem;
+}
+.ev-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 12px; }
+.ev-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ev-hint { font-size: 12px; color: #555; }
+.ev-btn {
+  background: #1e1e2e; border: 1px solid #3a3a4a; color: #ccc;
+  padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.ev-btn:hover:not(:disabled) { border-color: #a78bfa; color: #a78bfa; }
+.ev-btn:disabled { opacity: 0.5; cursor: default; }
+.ev-btn-purple { border-color: #7c3aed; color: #a78bfa; }
+.ev-btn-sm { background: none; border: none; color: #555; font-size: 11px; cursor: pointer; text-decoration: underline; }
+.ev-textarea {
+  width: 100%; background: #0f1117; border: 1px solid #2a2a3a; border-radius: 6px;
+  color: #ccc; padding: 10px 12px; font-size: 13px; resize: vertical;
+  font-family: inherit; line-height: 1.5; margin-bottom: 10px;
+}
+.ev-textarea:focus { outline: none; border-color: #7c3aed; }
+.ev-validate-form { display: flex; flex-direction: column; }
+.ev-error { color: #f87171; font-size: 12px; margin-top: 6px; }
+
+/* Validation result */
+.vr-score-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.vr-score { font-size: 2.5rem; font-weight: 700; color: #a78bfa; font-variant-numeric: tabular-nums; }
+.vr-score-label { color: #888; font-size: 13px; }
+.vr-counts { display: flex; gap: 12px; margin-left: auto; font-size: 12px; }
+.vr-confirmed { color: #34d399; }
+.vr-contradicted { color: #f87171; }
+.vr-summary { font-size: 13px; color: #bbb; line-height: 1.6; margin-bottom: 14px;
+              background: #0f1117; border-radius: 6px; padding: 10px 12px; }
+.vr-sections { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.vr-section { background: #0f1117; border: 1px solid #2a2a3a; border-radius: 6px; overflow: hidden; }
+.vr-sec-header { display: flex; align-items: center; justify-content: space-between;
+                  padding: 8px 12px; cursor: pointer; }
+.vr-sec-header:hover { background: #1a1a2e; }
+.vr-sec-title { font-size: 13px; color: #ccc; }
+.vr-sec-score { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+.score-good { background: #064e3b; color: #34d399; }
+.score-mid  { background: #422006; color: #fb923c; }
+.score-bad  { background: #450a0a; color: #f87171; }
+.score-neutral { background: #1e1e2e; color: #888; }
+.vr-claims { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid #2a2a3a; }
+.claim { font-size: 12px; padding: 3px 0; line-height: 1.4; }
+.claim-ok  { color: #34d399; }
+.claim-no  { color: #f87171; }
 </style>
 
 <style>
