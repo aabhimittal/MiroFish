@@ -13,25 +13,30 @@ from ..config import Config
 
 class LLMClient:
     """LLM客户端"""
-    
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        cost_context_id: Optional[str] = None,
+        budget_usd: Optional[float] = None,
     ):
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
         self.model = model or Config.LLM_MODEL_NAME
-        
+        # Optional cost tracking context (e.g. simulation_id or project_id)
+        self.cost_context_id = cost_context_id
+        self.budget_usd = budget_usd
+
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
-        
+
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url
         )
-    
+
     def chat(
         self,
         messages: List[Dict[str, str]],
@@ -41,30 +46,52 @@ class LLMClient:
     ) -> str:
         """
         发送聊天请求
-        
+
         Args:
             messages: 消息列表
             temperature: 温度参数
             max_tokens: 最大token数
             response_format: 响应格式（如JSON模式）
-            
+
         Returns:
             模型响应文本
         """
+        # Enforce budget before making the call
+        if self.cost_context_id:
+            try:
+                from ..services.cost_tracker import check_budget
+                check_budget(self.cost_context_id, self.budget_usd)
+            except Exception:
+                raise
+
         kwargs = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        
+
         if response_format:
             kwargs["response_format"] = response_format
-        
+
         response = self.client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         # 部分模型（如MiniMax M2.5）会在content中包含<think>思考内容，需要移除
         content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+
+        # Record token usage for cost tracking
+        if self.cost_context_id and response.usage:
+            try:
+                from ..services.cost_tracker import record_call
+                record_call(
+                    context_id=self.cost_context_id,
+                    model=self.model,
+                    prompt_tokens=response.usage.prompt_tokens,
+                    completion_tokens=response.usage.completion_tokens,
+                )
+            except Exception:
+                pass  # Never let cost tracking break the main flow
+
         return content
     
     def chat_json(

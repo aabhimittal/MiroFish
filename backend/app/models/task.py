@@ -3,6 +3,8 @@
 用于跟踪长时间运行的任务（如图谱构建）
 """
 
+import os
+import json
 import uuid
 import threading
 from datetime import datetime
@@ -11,6 +13,9 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from ..utils.locale import t
+
+# Directory where task state files are persisted across restarts
+_TASKS_DIR = os.path.join(os.path.dirname(__file__), '../../uploads/tasks')
 
 
 class TaskStatus(str, Enum):
@@ -70,7 +75,48 @@ class TaskManager:
                     cls._instance = super().__new__(cls)
                     cls._instance._tasks: Dict[str, Task] = {}
                     cls._instance._task_lock = threading.Lock()
+                    cls._instance._load_tasks_from_disk()
         return cls._instance
+
+    def _load_tasks_from_disk(self):
+        """Reload persisted tasks from disk on startup (survives Flask restarts)."""
+        os.makedirs(_TASKS_DIR, exist_ok=True)
+        try:
+            for fname in os.listdir(_TASKS_DIR):
+                if not fname.endswith('.json'):
+                    continue
+                fpath = os.path.join(_TASKS_DIR, fname)
+                try:
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    task = Task(
+                        task_id=data['task_id'],
+                        task_type=data['task_type'],
+                        status=TaskStatus(data['status']),
+                        created_at=datetime.fromisoformat(data['created_at']),
+                        updated_at=datetime.fromisoformat(data['updated_at']),
+                        progress=data.get('progress', 0),
+                        message=data.get('message', ''),
+                        result=data.get('result'),
+                        error=data.get('error'),
+                        metadata=data.get('metadata', {}),
+                        progress_detail=data.get('progress_detail', {}),
+                    )
+                    self._tasks[task.task_id] = task
+                except Exception:
+                    pass  # Corrupt file — skip silently
+        except Exception:
+            pass
+
+    def _persist_task(self, task: Task):
+        """Write a single task to disk."""
+        os.makedirs(_TASKS_DIR, exist_ok=True)
+        fpath = os.path.join(_TASKS_DIR, f'{task.task_id}.json')
+        try:
+            with open(fpath, 'w', encoding='utf-8') as f:
+                json.dump(task.to_dict(), f, ensure_ascii=False)
+        except Exception:
+            pass
     
     def create_task(self, task_type: str, metadata: Optional[Dict] = None) -> str:
         """
@@ -97,7 +143,8 @@ class TaskManager:
         
         with self._task_lock:
             self._tasks[task_id] = task
-        
+            self._persist_task(task)
+
         return task_id
     
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -143,6 +190,7 @@ class TaskManager:
                     task.error = error
                 if progress_detail is not None:
                     task.progress_detail = progress_detail
+                self._persist_task(task)
     
     def complete_task(self, task_id: str, result: Dict):
         """标记任务完成"""

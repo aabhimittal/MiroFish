@@ -62,6 +62,19 @@ class Config:
     REPORT_AGENT_MAX_TOOL_CALLS = int(os.environ.get('REPORT_AGENT_MAX_TOOL_CALLS', '5'))
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
+
+    # Concurrent simulation limit
+    MAX_CONCURRENT_SIMULATIONS = int(os.environ.get('MAX_CONCURRENT_SIMULATIONS', '3'))
+
+    # LLM cost tracking (USD per 1K tokens; defaults suit gpt-4o-mini pricing)
+    LLM_COST_PER_1K_INPUT_TOKENS = float(os.environ.get('LLM_COST_PER_1K_INPUT_TOKENS', '0.00015'))
+    LLM_COST_PER_1K_OUTPUT_TOKENS = float(os.environ.get('LLM_COST_PER_1K_OUTPUT_TOKENS', '0.0006'))
+    # Set to 0 to disable budget enforcement
+    DEFAULT_BUDGET_USD_PER_SIMULATION = float(os.environ.get('DEFAULT_BUDGET_USD_PER_SIMULATION', '0'))
+
+    # Simulation timezone / culture defaults (IANA timezone string)
+    DEFAULT_SIMULATION_TIMEZONE = os.environ.get('DEFAULT_SIMULATION_TIMEZONE', 'UTC')
+    DEFAULT_SIMULATION_CULTURE = os.environ.get('DEFAULT_SIMULATION_CULTURE', 'global')
     
     @classmethod
     def validate(cls):

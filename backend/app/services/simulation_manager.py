@@ -235,7 +235,9 @@ class SimulationManager:
         defined_entity_types: Optional[List[str]] = None,
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
-        parallel_profile_count: int = 3
+        parallel_profile_count: int = 3,
+        target_timezone: Optional[str] = None,
+        target_culture: Optional[str] = None,
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -408,7 +410,9 @@ class SimulationManager:
                 document_text=document_text,
                 entities=filtered.entities,
                 enable_twitter=state.enable_twitter,
-                enable_reddit=state.enable_reddit
+                enable_reddit=state.enable_reddit,
+                target_timezone=target_timezone,
+                target_culture=target_culture,
             )
             
             if progress_callback:
