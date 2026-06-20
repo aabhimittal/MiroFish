@@ -49,3 +49,28 @@ export const getReport = (reportId) => {
 export const chatWithReport = (data) => {
   return requestWithRetry(() => service.post('/api/report/chat', data), 3, 1000)
 }
+
+/**
+ * Validate report predictions against ground truth text
+ * @param {string} reportId
+ * @param {string} groundTruth - text of what actually happened
+ */
+export const validateReport = (reportId, groundTruth) => {
+  return service.post(`/api/report/${reportId}/validate`, { ground_truth: groundTruth })
+}
+
+/**
+ * Get cached validation result (if any)
+ * @param {string} reportId
+ */
+export const getValidation = (reportId) => {
+  return service.get(`/api/report/${reportId}/validation`)
+}
+
+/**
+ * Download report as self-contained HTML
+ * @param {string} reportId
+ */
+export const exportReportHtml = (reportId) => {
+  return service.get(`/api/report/${reportId}/export/html`, { responseType: 'blob' })
+}

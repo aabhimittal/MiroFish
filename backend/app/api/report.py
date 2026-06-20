@@ -1005,12 +1005,12 @@ def get_graph_statistics_tool():
         
         tools = ZepToolsService()
         result = tools.get_graph_statistics(graph_id)
-        
+
         return jsonify({
             "success": True,
             "data": result
         })
-        
+
     except Exception as e:
         logger.error(f"获取图谱统计失败: {str(e)}")
         return jsonify({
@@ -1018,3 +1018,176 @@ def get_graph_statistics_tool():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+# ============== Ground-Truth Validation ==============
+
+@report_bp.route('/<report_id>/validate', methods=['POST'])
+def validate_report_predictions(report_id: str):
+    """
+    Compare report predictions against user-supplied ground truth.
+    Results are cached — second call returns the cached result instantly.
+
+    Request JSON: { "ground_truth": "<text of what actually happened>" }
+    Response: { overall_score, sections, summary, validated_at, ... }
+    """
+    try:
+        data = request.get_json() or {}
+        ground_truth = data.get('ground_truth', '').strip()
+        if not ground_truth:
+            return jsonify({"success": False, "error": "ground_truth is required"}), 400
+
+        from ..services.report_validator import validate_report
+        result = validate_report(report_id, ground_truth)
+        return jsonify({"success": True, "data": result})
+
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Validation failed: {e}")
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@report_bp.route('/<report_id>/validation', methods=['GET'])
+def get_cached_validation(report_id: str):
+    """Return previously cached validation result, or 404 if none exists."""
+    try:
+        from ..services.report_validator import get_cached_validation
+        result = get_cached_validation(report_id)
+        if result is None:
+            return jsonify({"success": False, "error": "No validation result found"}), 404
+        return jsonify({"success": True, "data": result})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ============== HTML Report Export ==============
+
+@report_bp.route('/<report_id>/export/html', methods=['GET'])
+def export_report_html(report_id: str):
+    """Export the full report as a self-contained HTML file."""
+    import io
+    try:
+        report = ReportManager.get_report(report_id)
+        if not report:
+            return jsonify({"success": False, "error": t('api.reportNotFound', id=report_id)}), 404
+
+        sections = ReportManager.get_generated_sections(report_id)
+        if not sections:
+            return jsonify({"success": False, "error": "Report has no sections yet"}), 400
+
+        # Convert markdown to HTML using stdlib-safe approach
+        try:
+            import markdown as md_lib
+            def md_to_html(text: str) -> str:
+                return md_lib.markdown(text, extensions=['tables', 'fenced_code'])
+        except ImportError:
+            # Fallback: very light markdown → HTML conversion (headings + paragraphs)
+            import re
+            def md_to_html(text: str) -> str:
+                text = re.sub(r'^#{4} (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
+                text = re.sub(r'^#{3} (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
+                text = re.sub(r'^#{2} (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+                text = re.sub(r'^# (.+)$', r'<h1>\1</h1>', text, flags=re.MULTILINE)
+                text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+                text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+                text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+                # Wrap paragraphs
+                parts = re.split(r'\n{2,}', text)
+                out = []
+                for p in parts:
+                    p = p.strip()
+                    if p and not p.startswith('<h'):
+                        p = f'<p>{p}</p>'
+                    out.append(p)
+                return '\n'.join(out)
+
+        # Assemble body HTML
+        body_parts = []
+        for sec in sections:
+            body_parts.append(md_to_html(sec['content']))
+
+        # Load simulation run state for metrics header
+        sim_manager = SimulationManager()
+        sim_state = sim_manager.get_simulation(report.simulation_id) if report.simulation_id else None
+        metrics_html = ""
+        if sim_state:
+            from ..services.simulation_runner import SimulationRunner
+            run_state = SimulationRunner.get_run_state(report.simulation_id)
+            if run_state:
+                metrics_html = f"""
+<div class="metrics-bar">
+  <div class="metric"><span class="metric-label">Total Actions</span>
+    <span class="metric-value">{run_state.twitter_actions_count + run_state.reddit_actions_count}</span></div>
+  <div class="metric"><span class="metric-label">Rounds</span>
+    <span class="metric-value">{run_state.current_round} / {run_state.total_rounds}</span></div>
+  <div class="metric"><span class="metric-label">Info Plaza</span>
+    <span class="metric-value">{run_state.twitter_actions_count} actions</span></div>
+  <div class="metric"><span class="metric-label">Topic Community</span>
+    <span class="metric-value">{run_state.reddit_actions_count} actions</span></div>
+</div>"""
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiroFish Report — {report_id}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: #0f1117; color: #e0e0e0; line-height: 1.7; padding: 2rem; }}
+  .wrapper {{ max-width: 860px; margin: 0 auto; }}
+  header {{ border-bottom: 1px solid #2a2a3a; padding-bottom: 1.5rem; margin-bottom: 2rem; }}
+  header h1 {{ font-size: 1.6rem; color: #fff; margin-bottom: 0.4rem; }}
+  header p {{ color: #888; font-size: 0.9rem; }}
+  .metrics-bar {{ display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1.5rem 0;
+                  background: #1a1a2e; border-radius: 8px; padding: 1rem 1.5rem; }}
+  .metric {{ display: flex; flex-direction: column; gap: 2px; }}
+  .metric-label {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; }}
+  .metric-value {{ font-size: 1.1rem; font-weight: 600; color: #a78bfa; font-variant-numeric: tabular-nums; }}
+  .section {{ margin-bottom: 2.5rem; }}
+  h1 {{ font-size: 1.8rem; color: #e2e8f0; margin: 1.5rem 0 0.8rem; }}
+  h2 {{ font-size: 1.3rem; color: #c4b5fd; border-left: 3px solid #7c3aed;
+        padding-left: 0.8rem; margin: 2rem 0 0.8rem; }}
+  h3 {{ font-size: 1.1rem; color: #a78bfa; margin: 1.5rem 0 0.5rem; }}
+  h4 {{ font-size: 1rem; color: #94a3b8; margin: 1rem 0 0.4rem; }}
+  p {{ margin-bottom: 0.9rem; color: #c8ccd4; }}
+  strong {{ color: #e2e8f0; }}
+  code {{ background: #1e1e2e; padding: 0.15em 0.4em; border-radius: 4px;
+          font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; color: #7dd3fc; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 1rem 0; }}
+  th {{ background: #1a1a2e; color: #c4b5fd; padding: 0.5rem 0.75rem; text-align: left; }}
+  td {{ border-top: 1px solid #2a2a3a; padding: 0.5rem 0.75rem; color: #c8ccd4; }}
+  hr {{ border: none; border-top: 1px solid #2a2a3a; margin: 2rem 0; }}
+  footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #2a2a3a;
+            font-size: 0.8rem; color: #555; text-align: center; }}
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <header>
+    <h1>MiroFish Simulation Report</h1>
+    <p>Report ID: {report_id} &nbsp;|&nbsp; Generated: {report.created_at if hasattr(report, 'created_at') else 'N/A'}</p>
+  </header>
+  {metrics_html}
+  <div class="report-body">
+    {''.join(f'<div class="section">{part}</div>' for part in body_parts)}
+  </div>
+  <footer>Generated by MiroFish &mdash; Multi-Agent Social Simulation Platform</footer>
+</div>
+</body>
+</html>"""
+
+        buf = io.BytesIO(html.encode('utf-8'))
+        buf.seek(0)
+        return send_file(
+            buf,
+            mimetype='text/html',
+            as_attachment=True,
+            download_name=f"report_{report_id}.html"
+        )
+
+    except Exception as e:
+        logger.error(f"HTML export failed: {e}")
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
